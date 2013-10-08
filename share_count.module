@@ -56,8 +56,8 @@ function share_count_queue_worker($data) {
       // Get all the providers that need updating for this entity. This should
       // prevent multiple entries in the queue for the same entity from running.
       foreach (share_count_entity_update_status($entity) as $provider) {
-        $path = entity_uri($data['type'], $entity);
-        $path = $path['uri'];
+        $uri = entity_uri($data['type'], $entity);
+        $path = drupal_get_path_alias($uri['path']);
         share_count_entity_update_count($entity, $provider, $path);
         share_count_entity_save_count($entity, $provider, $data['type']);
         // Clear this specific page cache.
@@ -353,16 +353,13 @@ function share_count_entity_load($entities, $type) {
 function share_count_entity_view($entity, $type, $view_mode, $langcode) {
   if (share_count_entity_type_enabled($type)) {
     list($id) = entity_extract_ids($type, $entity);
-
     // Only consider updating if this is a full entity, and it has a path, and is
     // published.
     if ($view_mode == 'full' && $entity->status == 1) {
       // Does this entity need an update?
       if (share_count_entity_update_status($entity)) {
         $update_queue = DrupalQueue::get('share_count_entity_update');
-        $update_queue->createItem(array('id' => $id, 'path' => $path, 'type' => $type));
-        dpm('Added to queue');
-        dpm($entity->share_count);
+        $update_queue->createItem(array('id' => $id, 'type' => $type));
       }
     }
   }
