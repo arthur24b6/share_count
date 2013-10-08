@@ -191,7 +191,6 @@ function share_count_entity_provider_status($entity, $provider) {
     return TRUE;
   }
   $update = time() - $entity->share_count[$provider['id']]['updated'];
-  print "Provider {$provider['id']} is $update seconds stale \n";
   return $update > variable_get('share_count_update_time', 86400) ? TRUE : FALSE;
 }
 
