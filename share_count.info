@@ -1,0 +1,11 @@
+name = Share count statistics
+description = "Keeps track of how many times content has been shared with various social/sharing services."
+core = 7.x
+files[] = views/share_count_handler_field_share_count_link.inc
+
+; Information added by drupal.org packaging script on 2013-05-25
+version = "7.x-1.0-alpha1+1-dev"
+core = "7.x"
+project = "share_count"
+datestamp = "1369453342"
+

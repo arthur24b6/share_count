@@ -1,0 +1,518 @@
+<?php
+
+/**
+ * @file
+ * Share Count module.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function share_count_menu() {
+  $items['admin/config/services/share-services'] = array(
+    'title' => 'Share count social services administration.',
+    'description' => 'Enable or disable share services.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('share_count_service_form'),
+    'access arguments' => array('administer share services'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_permission().
+ */
+function share_count_permission() {
+  return array(
+    'administer share counter' => array(
+      'title' => t('Administer share counters'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function share_count_cron_queue_info() {
+  $queues = array();
+  $queues['share_count_entity_update'] = array(
+    'worker callback' => 'share_count_queue_worker',
+    'time' => variable_get('share_count_queue_worker', 60),
+  );
+  return $queues;
+}
+
+/**
+ * Update entities that are in the queue.
+ *
+ * @param array $data
+ *   Contains id, type
+ */
+function share_count_queue_worker($data) {
+  if ($entities = entity_load($data['type'], array($data['id']))) {
+    foreach($entities as $entity) {
+      // Get all the providers that need updating for this entity. This should
+      // prevent multiple entries in the queue for the same entity from running.
+      foreach (share_count_entity_update_status($entity) as $provider) {
+        $path = entity_uri($data['type'], $entity);
+        $path = $path['uri'];
+        share_count_entity_update_count($entity, $provider, $path);
+        share_count_entity_save_count($entity, $provider, $data['type']);
+        // Clear this specific page cache.
+        // @TODO verify that this is correct.
+        cache_clear_all($path, 'cache_path');
+        cache_clear_all($data['id'], 'cache_entity_' . $data['type']);
+      }
+    }
+  }
+}
+
+/**
+ * Get all available providers.
+ */
+function share_count_providers() {
+  $items = module_invoke_all('share_count_provider');
+  foreach ($items as $id => $item) {
+    $items[$id]['id'] = $id;
+  }
+  return $items;
+}
+
+/**
+ * Get all enabled providers.
+ */
+function share_count_enabled_providers() {
+  $enabled = array();
+  foreach (share_count_providers() as $provider) {
+    if (variable_get('share_count_provider_' . $provider['id'], FALSE)) {
+      $enabled[$provider['id']] = $provider;
+    }
+  }
+  return $enabled;
+}
+
+/**
+ * Is this provider enabled?
+ *
+ * @param string $id
+ *   Provider ID.
+ */
+function share_count_provider_enabled($id) {
+  $enabled_providers = share_count_enabled_providers();
+  if (!empty($enabled_providers[$id])) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Update all enabled share counts for this entity.
+ */
+function share_count_entity_update_counts($entity, $path) {
+  foreach (share_count_enabled_providers() as $provider) {
+    share_count_entity_update_count($entity, $path, $provider);
+  }
+}
+
+/**
+ * Update a share count for a specific provider.
+ *
+ * Does not check provider enabled status.
+ */
+function share_count_entity_update_count($entity, $provider, $path) {
+  $entity->share_count[$provider['id']]['count'] = $provider['callback']($path);
+}
+
+/**
+ * Save a provider count for an entity.
+ */
+function share_count_entity_save_count($entity, $provider, $type) {
+  list($id) = entity_extract_ids($type, $entity);
+
+  $fields = array(
+    'sid' => $provider['id'],
+    'updated' => time(),
+    'count' => $entity->share_count[$provider['id']]['count'],
+    'entity_type' => $type,
+    'entity_id' => $id,
+  );
+
+  // Update the database count.
+  db_merge('share_count')
+    ->key(array('sid' => $provider['id'], 'entity_type' => $type, 'entity_id' => $id))
+    ->fields($fields)
+    ->execute();
+}
+
+
+/**
+ * Check to see if any provider should update the share count on this entity.
+ *
+ * Returns an array of providers that need to be updated.
+ *
+ * @param object $entity
+ *   Drupal object.
+ *
+ * @return array
+ *   Array of share count proviers that need to update.
+ */
+function share_count_entity_update_status($entity) {
+  $return = array();
+  // Get all the providers.
+  $providers = share_count_enabled_providers();
+  // If there is not share count data this entity is ready for update.
+  if (!isset($entity->share_count)) {
+    return $providers;
+  }
+  // Check the status for each provider.
+  foreach ($providers as $provider) {
+    if (share_count_entity_provider_status($entity, $provider)) {
+      $return[$provider['id']] = $provider;
+    }
+  }
+  return $return;
+}
+
+/**
+ * Should this provider updated the share count for this entity.
+ *
+ * @param object $entity
+ *   Drupal entity object.
+ * @param array $provider
+ *   Share count provider array.
+ *
+ * @return boolean
+ *   TRUE if this should be updated, FALSE if update is not needed.
+ */
+function share_count_entity_provider_status($entity, $provider) {
+  if (empty($entity->share_count[$provider['id']]['updated'])) {
+    return TRUE;
+  }
+  $update = time() - $entity->share_count[$provider['id']]['updated'];
+  print "Provider {$provider['id']} is $update seconds stale \n";
+  return $update > variable_get('share_count_update_time', 86400) ? TRUE : FALSE;
+}
+
+/**
+ * Fetch all enabled counts for this entity.
+ */
+function share_count_entity_counts($entity, $type) {
+  list($id) = entity_extract_ids($type, $entity);
+  $entity->share_count = array();
+  $entity->share_count_total = 0;
+  $results = db_query("SELECT * FROM {share_count} WHERE entity_type = :type AND entity_id IN (:ids) AND sid IN (:sid)",
+    array(
+      ':type' => $type,
+      ':ids' => $id,
+      ':sid' => array_keys(share_count_enabled_providers())
+      ))
+    ->fetchAll();
+  foreach ($results as $result) {
+    $entity->share_count[$result->sid] = array(
+      'count' => $result->count,
+      'updated' => $result->updated,
+      'id' => $result->sid,
+    );
+    $entity->share_count_total += $result->count;
+  }
+}
+
+/**
+ * Checks to see if this entity type has share counts enabled.
+ *
+ * @param string $type
+ *   Entity type machine name
+ *
+ * @return bool
+ */
+function share_count_entity_type_enabled($type) {
+  if (in_array($type, variable_get('share_count_entity_types', array('node')))) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Implements hook_share_count_provider().
+ */
+function share_count_share_count_provider() {
+  $items = array();
+  $items['twitter'] = array(
+    'title' => t('Twitter'),
+    'callback' => 'share_count_twitter_count'
+  );
+  $items['facebook'] = array(
+    'title' => t('Facebook shares'),
+    'callback' => 'share_count_facebook_count'
+  );
+  $items['plusone'] = array(
+    'title' => t('Google +1'),
+    'callback' => 'share_count_plusone_count'
+  );
+  $items['linkedin'] = array(
+    'title' => t('Linkedin'),
+    'callback' => 'share_count_linkedin_count'
+  );
+  return $items;
+}
+
+/**
+ * Creates the admin form.
+ */
+function share_count_service_form($form, &$form_state) {
+  $form = array();
+
+  $options = array(
+    300 => t('5 minutes'),
+    600 => t('10 minutes'),
+    900 => t('15 minutes'),
+    1200 => t('20 minutes'),
+    1800 => t('30 minutes'),
+    3600 => t('1 hour'),
+    7200 => t('2 hours'),
+    21600 => t('6 hours'),
+    43200 => t('12 hours'),
+    86400 => t('1 day'),
+  );
+  $form['share_count_update_time'] = array(
+    '#title' => t('Share count update time'),
+    '#type' => 'select',
+    '#default_value' => variable_get('share_count_update_time', 86400),
+    '#options' => $options,
+    '#description' => t('If this value is less that the Drupal cache expire time
+      it will have performance implications as share_count will run on every
+      page view.'),
+  );
+
+  $form['share_services'] = array(
+    '#tree' => TRUE,
+  );
+
+  $providers = share_count_providers();
+  foreach ($providers as $id => $provider) {
+    $form['share_services'][$id] = array(
+      '#title' => $provider['title'],
+      '#type' => 'checkbox',
+      '#default_value' => variable_get('share_count_provider_' . $id, FALSE)
+    );
+  }
+
+  $options = array();
+  foreach (entity_get_info() as $id => $type) {
+    $options[$id] = $type['label'];
+  }
+  $form['share_count_entity_types'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Enabled on these entity types'),
+    '#options' => $options,
+    '#default_value' => variable_get('share_count_entity_types', array('node'))
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save'),
+  );
+
+  return $form;
+}
+
+/**
+ * Handles form submission for share_count_service_form().
+ */
+function share_count_service_form_submit($form, &$form_state) {
+  // Get all of the provider statuses.
+  foreach ($form_state['values']['share_services'] as $id => $status) {
+    variable_set('share_count_provider_' . $id, $status);
+  }
+  // Set the update interval.
+  variable_set('share_count_update_time', $form_state['values']['share_count_update_time']);
+  // Set the entity types.
+  variable_set('share_count_entity_types', $form_state['values']['share_count_entity_types']);
+
+  drupal_set_message(t('Share service settings have been applied.'));
+}
+
+/**
+ * Implements hook_entity_load().
+ */
+function share_count_entity_load($entities, $type) {
+  // Only load enabled types.
+  if (share_count_entity_type_enabled($type)) {
+    foreach($entities as $id => $entity) {
+      // Get the entity counts for this entity that already exist.
+      share_count_entity_counts($entities[$id], $type);
+    }
+  }
+}
+
+/**
+ * Implements hook_entity_view().
+ */
+function share_count_entity_view($entity, $type, $view_mode, $langcode) {
+  if (share_count_entity_type_enabled($type)) {
+    list($id) = entity_extract_ids($type, $entity);
+
+    // Only consider updating if this is a full entity, and it has a path, and is
+    // published.
+    if ($view_mode == 'full' && $entity->status == 1) {
+      // Does this entity need an update?
+      if (share_count_entity_update_status($entity)) {
+        $update_queue = DrupalQueue::get('share_count_entity_update');
+        $update_queue->createItem(array('id' => $id, 'path' => $path, 'type' => $type));
+        dpm('Added to queue');
+        dpm($entity->share_count);
+      }
+    }
+  }
+}
+
+/**
+ * Load and return a particular count. Not used for anything yet, but could be.
+ */
+function share_count_load($sid) {
+  $count = entity_load('share_count', array($sid), array(), $reset);
+  return !empty($count) ? reset($count) : FALSE;
+}
+
+
+/**
+ * Implements hook_views_api().
+ */
+function share_count_views_api() {
+  return array(
+    'api' => 3,
+  );
+}
+
+
+/**
+ * share_count_twitter_count()
+ *
+ * @param $path
+ *   The path of the entity being counted.
+ *
+ * @return
+ *   Number of times this item has been tweeted.
+ */
+function share_count_twitter_count($path) {
+  global $base_url;
+  $twitter_url = "http://urls.api.twitter.com/1/urls/count.json?url=" . $base_url . '/' . $path;
+  $twitter_json = _share_count_get_remote_counts($twitter_url);
+  if (empty($twitter_json->error)) {
+    $twitter_result = drupal_json_decode($twitter_json->data);
+    if (!empty($twitter_result)) {
+      return $twitter_result['count'];
+    }
+  }
+}
+
+/**
+ * share_count_facebook_count()
+ *
+ * @param $path
+ *   The path of the entity being counted.
+ *
+ * @return
+ *   Number of times this item has been shared.
+ */
+function share_count_facebook_count($path) {
+  global $base_url;
+  $path = "$base_url/$path";
+  $path = urlencode($path);
+  $fb_url = "http://graph.facebook.com/?id=" . $path;
+  $fb_json = _share_count_get_remote_counts($fb_url);
+  if (empty($fb_json->error)) {
+    $fb_result = drupal_json_decode($fb_json->data);
+    if (!empty($fb_result['shares'])) {
+      return $fb_result['shares'];
+    }
+  }
+}
+
+/**
+ * share_count_plusone_count()
+ *
+ * @param $path
+ *   The path of the entity being counted.
+ *
+ * @param $person
+ *   The person id.
+ *
+ * @return
+ *   Number of times this item has been plusoned.
+ *
+ * @link http://www.tomanthony.co.uk/blog/google_plus_one_button_seo_count_api/ @endlink
+ */
+function share_count_plusone_count($path) {
+  global $base_url;
+
+  // Build the JSON data for the API request.
+  $data['method'] = 'pos.plusones.get';
+  $data['id'] = 'p';
+  $data['params']['nolog'] = TRUE;
+  $data['params']['id'] = $base_url . '/' . $path;
+  $data['params']['source'] = 'widget';
+  $data['params']['userId'] = '@viewer';
+  $data['params']['groupId'] = '@self';
+  $data['jsonrpc'] = '2.0';
+  $data['key'] = 'p';
+  $data['apiVersion'] = 'v1';
+
+  $url = 'https://clients6.google.com/rpc?key=AIzaSyCKSbrvQasunBoV16zDH9R33D88CeLr9gQ';
+  $options['data'] = json_encode($data);
+  $options['method'] = 'POST';
+  $options['headers']['Content-Type'] = 'application/json';
+
+  $request = drupal_http_request($url, $options);
+  if (empty($request->error) && !empty($request->data)) {
+    $request->data = json_decode($request->data);
+    if (isset($request->data->result->metadata->globalCounts->count)) {
+      return $request->data->result->metadata->globalCounts->count;
+    }
+  }
+}
+
+/**
+ * share_count_linkedin_count()
+ *
+ * @param $path
+ *   The path of the entity being counted.
+ *
+ * @return
+ *   Number of times this item has been plusoned.
+ */
+function share_count_linkedin_count($path) {
+  global $base_url;
+  $linkedin_url = "http://www.linkedin.com/cws/share-count?url=" . $base_url . '/' . $path . '&type=JSON';
+  $linkedin_json = _share_count_get_remote_counts($linkedin_url);
+  if (empty($linked_json->error)) {
+    if (!empty($linked_json)) {
+      $temp1 = drupal_json_decode($linkedin_json->data);
+      $temp2 = substr($temp1, 26);
+      $linkedin_json = drupal_json_decode($temp2);
+      return $linkedin_json['count'];
+    }
+  }
+}
+
+/**
+ * _share_count_get_remote_counts()
+ *   Internal function to retrieve external data
+ *
+ * @param $remote_path
+ *   The remote url, fully created, used to get the data.
+ *
+ * @return
+ *   Usually a json object that will need to be parsed.
+ */
+function _share_count_get_remote_counts($remote_path) {
+  $options = array('timeout' => 3);
+  $json = drupal_http_request($remote_path, $options);
+  // $json will always be something if there is a connection.
+  if ($json) {
+    return $json;
+  }
+  return 0;
+}

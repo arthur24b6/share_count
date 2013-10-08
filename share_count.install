@@ -1,0 +1,64 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ */
+function share_count_schema() {
+  $schema['share_count'] = array(
+    'description' => 'Stores share counts per node for certain items.',
+    'fields' => array(
+      'sid' => array(
+        'description' => 'The primary identifier for a social service.',
+        'type' => 'varchar',
+        'length' => 128,
+        'default' => NULL,
+      ),
+      'updated' => array(
+        'desctiption' => 'When the share were last updated.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'count' => array(
+        'desctiption' => 'How many shares?',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'entity_type' => array(
+        'description' => 'The type of the item being counted.',
+        'type' => 'varchar',
+        'length' => 32,
+        'default' => NULL,
+      ),
+      'entity_id' => array(
+        'desctiption' => 'When the share were last updated.',
+        'type' => 'int',
+        'default' => 0,
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('sid', 'entity_type', 'entity_id'),
+  );
+
+  return $schema;
+}
+
+
+/**
+ * Update existing count data, remove services table.
+ */
+function share_count_update_7002() {
+  // Map the old sids to the new ones. Note that this will not update any other
+  // provider ids.
+  $providers = array(
+    1 => 'twitter',
+    2 => 'facebook',
+    3 => 'plusone',
+    4 => 'linkedin'
+  );
+  foreach ($providers as $sid_old => $sid_new) {
+    db_query('UPDATE {share_count} SET sid = :sid_new WHERE sid = :sid_old', array(':sid_new' => $sid_new, ':sid_old' => $sid_old));
+  }
+  // Drop services table
+  db_drop_table('share_services');
+}
