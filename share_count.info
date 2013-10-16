@@ -5,10 +5,3 @@ core = 7.x
 files[] = views/share_count_handler_field_share_count_link.inc
 files[] = share_count.module
 files[] = tests/share_count.test
-
-; Information added by drupal.org packaging script on 2013-05-25
-version = "7.x-1.0-alpha1+1-dev"
-core = "7.x"
-project = "share_count"
-datestamp = "1369453342"
-
