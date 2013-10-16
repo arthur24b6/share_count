@@ -1,0 +1,132 @@
+<?php
+
+/**
+ * @file
+ * Provides tests for sharecounts.
+ */
+
+
+class ShareCount extends DrupalWebTestCase {
+
+  /**
+   * Define tests.
+   */
+  public static function getInfo() {
+    // Note: getInfo() strings should not be translated.
+    return array(
+      'name' => 'Share count tests',
+      'description' => 'Test to ensure that Share Count functions as expected
+        specified.',
+      'group' => 'Share Count',
+    );
+  }
+
+  /**
+   * Setup functions for the test.
+   */
+  function setUp($modules = array()) {
+    $modules[] = 'share_count';
+    $modules[] = 'share_count_test';
+    parent::setUp($modules);
+    $account = $this->drupalCreateUser(array('administer nodes', 'create article content'));
+    $this->drupalLogin($account);
+
+    // Enable the test share service.
+    variable_set('share_count_provider_share_count_provider_test', TRUE);
+  }
+
+  /**
+   * Utility function to create a test node.
+   *
+   * @return int
+   *   Returns the node id
+   */
+  private function createNode() {
+    // Create an article node with file markup in the body field.
+    $edit = array(
+      'title' => $this->randomName(8),
+      'body[und][0][value]' => "This is a test",
+    );
+    // Save the article node. First argument is the URL, then the value array
+    // and the third is the label the button that should be "clicked".
+    $this->drupalPost('node/add/article', $edit, t('Save'));
+    // Get the article node that was saved by the unique title.
+    $node = $this->drupalGetNodeByTitle($edit['title']);
+    return $node;
+  }
+
+
+  /**
+   * Check the number of items in the queue.
+   *
+   * @return int
+   */
+  private function queueCount() {
+    $results = db_query('SELECT count(name) as count FROM {queue} WHERE name = :name',
+      array(':name' => 'share_count_entity_update'))
+      ->fetchAssoc();
+    if (empty($results)) {
+      return FALSE;
+    }
+    return $results['count'];
+  }
+
+  /**
+   * Test the use of shares.
+   */
+  public function testShareCount() {
+    // Initial state should be zero.
+    $this->assertTrue(!$this->queueCount(), 'Initial share count queue is empty.');
+
+    // Create a node to test with.
+    $node = $this->createNode();
+    // On creation the node will have no share counts.
+    $this->assertTrue(empty($node->share_count), 'Initial node share count is zero.');
+    // On creation of the node, a job will be added to the queue.
+    $this->assertTrue($this->queueCount() == 1, 'Share share count is correct after adding a node.');
+
+    // Run cron.
+    drupal_cron_run();
+
+    $this->assertTrue(!$this->queueCount(), 'After cron, queue is now empty.');
+
+    // Reload the node to check the counts.
+    $node = node_load($node->nid, NULL, TRUE);
+
+    // After cron worker, test share count returns 5 counts.
+    $this->assertTrue($node->share_count['share_count_provider_test']['count'] == 5, 'Count for the node has been correctly updated.');
+
+    // Make sure that nothing new has been added to the queue after the node
+    // load.
+    $this->assertTrue(!$this->queueCount(), 'After node load queue is still empty.');
+
+    // View the node.
+    node_view($node, 'full');
+
+    // Ensure that no new cron jobs have been added because the time stamp on
+    // the count is still fresh.
+    $this->assertTrue(!$this->queueCount(), 'Share count time stamp is still fresh; no new jobs in queue.');
+
+
+    // Make the share count stale for this share.
+    db_query('UPDATE {share_count} SET updated = 0, count = 0 WHERE entity_id = :id AND sid = :sid',
+      array(':id' => $node->nid, ':sid' => 'share_count_provider_test'));
+    // Reload the node to check the counts.
+    $node = node_load($node->nid, NULL, TRUE);
+    $this->assertTrue($node->share_count['share_count_provider_test']['updated'] === 0, 'Share count update date is now stale');
+
+    // View the node.
+    node_view($node, 'full');
+    $this->assertTrue($this->queueCount() == 1, 'Node is now queued for updating.');
+
+    // Run cron.
+    drupal_cron_run();
+    $this->assertTrue(!$this->queueCount(), 'After cron, queue is now empty.');
+
+    // Reload the node to check the counts.
+    $node = node_load($node->nid, NULL, TRUE);
+    $this->assertTrue($node->share_count['share_count_provider_test']['count'] == 5, 'Count for the node has been correctly updated.');
+
+  }
+
+}

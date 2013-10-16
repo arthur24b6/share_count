@@ -1,0 +1,32 @@
+<?php
+
+/**
+ * Share count test module.
+ *
+ * Implements the share_count_provider() hook for testing purposes.
+ */
+
+
+/**
+ * Implements hook_share_count_provider().
+ */
+function share_count_test_share_count_provider() {
+  $items = array();
+  $items['share_count_provider_test'] = array(
+    'title' => t('Share count test provider'),
+    'callback' => 'share_count_test_callback'
+    );
+  return $items;
+}
+
+
+/**
+ * Callback function for the share count test.
+ *
+ * @param string $path
+ * 
+ * @return int
+ */
+function share_count_test_callback($path) {
+  return 5;
+}

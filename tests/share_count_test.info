@@ -1,0 +1,6 @@
+name = "Share Count Test"
+description = "Support module for Share Count tests."
+package = Testing
+core = 7.x
+dependencies[] = share_count
+hidden = TRUE
