@@ -63,7 +63,9 @@ function share_count_queue_worker($data) {
         // Clear this specific page cache.
         // @TODO verify that this is correct.
         cache_clear_all($path, 'cache_path');
-        cache_clear_all($data['id'], 'cache_entity_' . $data['type']);
+        if (module_exists('entitycache')) {
+          cache_clear_all($data['id'], 'cache_entity_' . $data['type']);
+        }
       }
     }
   }
@@ -198,23 +200,25 @@ function share_count_entity_provider_status($entity, $provider) {
  * Fetch all enabled counts for this entity.
  */
 function share_count_entity_counts($entity, $type) {
-  list($id) = entity_extract_ids($type, $entity);
-  $entity->share_count = array();
-  $entity->share_count_total = 0;
-  $results = db_query("SELECT * FROM {share_count} WHERE entity_type = :type AND entity_id IN (:ids) AND sid IN (:sid)",
-    array(
-      ':type' => $type,
-      ':ids' => $id,
-      ':sid' => array_keys(share_count_enabled_providers())
-      ))
-    ->fetchAll();
-  foreach ($results as $result) {
-    $entity->share_count[$result->sid] = array(
-      'count' => $result->count,
-      'updated' => $result->updated,
-      'id' => $result->sid,
-    );
-    $entity->share_count_total += $result->count;
+  if ($providers = share_count_enabled_providers()) {
+    list($id) = entity_extract_ids($type, $entity);
+    $entity->share_count = array();
+    $entity->share_count_total = 0;
+    $results = db_query("SELECT * FROM {share_count} WHERE entity_type = :type AND entity_id IN (:ids) AND sid IN (:sid)",
+      array(
+        ':type' => $type,
+        ':ids' => $id,
+        ':sid' => array_keys($providers)
+        ))
+      ->fetchAll();
+    foreach ($results as $result) {
+      $entity->share_count[$result->sid] = array(
+        'count' => $result->count,
+        'updated' => $result->updated,
+        'id' => $result->sid,
+      );
+      $entity->share_count_total += $result->count;
+    }
   }
 }
 
