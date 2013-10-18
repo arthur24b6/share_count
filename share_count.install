@@ -30,7 +30,7 @@ function share_count_schema() {
         'default' => NULL,
       ),
       'entity_id' => array(
-        'desctiption' => 'When the share were last updated.',
+        'desctiption' => 'The entity id.',
         'type' => 'int',
         'default' => 0,
         'unsigned' => TRUE,
@@ -38,6 +38,36 @@ function share_count_schema() {
       ),
     ),
     'primary key' => array('sid', 'entity_type', 'entity_id'),
+  );
+
+  $schema['share_count_total'] = array(
+    'description' => 'Total share counts per entity.',
+    'fields' => array(
+      'count' => array(
+        'desctiption' => 'Total share counts.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'updated' => array(
+        'desctiption' => 'When the share total was last updated.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'entity_type' => array(
+        'description' => 'The type of the item being counted.',
+        'type' => 'varchar',
+        'length' => 32,
+        'default' => NULL,
+      ),
+      'entity_id' => array(
+        'desctiption' => 'When the share were last updated.',
+        'type' => 'int',
+        'default' => 0,
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('entity_type', 'entity_id'),
   );
 
   return $schema;
@@ -59,6 +89,29 @@ function share_count_update_7002() {
   foreach ($providers as $sid_old => $sid_new) {
     db_query('UPDATE {share_count} SET sid = :sid_new WHERE sid = :sid_old', array(':sid_new' => $sid_new, ':sid_old' => $sid_old));
   }
-  // Drop services table
+  // Drop services table.
   db_drop_table('share_services');
+}
+
+/**
+ * Create count total table and process existing counts.
+ */
+function share_count_update_7003() {
+  db_create_table('share_count_total', drupal_get_schema_unprocessed('share_count', 'share_count_total'));
+  // Select all the entity ids from the share_count table
+  $results = db_query('SELECT entity_id, entity_type, updated, sum(count) AS count FROM {share_count} WHERE count != 0 GROUP BY entity_id ORDER BY entity_id DESC')->fetchAll();
+  // Create the totals for each entity.
+  foreach ($results as $result) {
+    db_merge('share_count_total')
+      ->key(array('entity_id' => $result->entity_id, 'entity_type' => $result->entity_type))
+      ->fields(array(
+        'entity_id' => $result->entity_id,
+        'entity_type' => $result->entity_type,
+        'count' => $result->count,
+        'updated' => $result->updated,
+        )
+      )
+      ->execute();
+  }
+  return "Added the new total count table.";
 }
