@@ -47,26 +47,32 @@ function share_count_cron_queue_info() {
 /**
  * Update entities that are in the queue.
  *
+ * @TODO this should lock the entity to prevent multiple processes from trying
+ * to update it at the same time.
+ *
  * @param array $data
  *   Contains id, type
  */
 function share_count_queue_worker($data) {
+  // Load the entity.
   if ($entities = entity_load($data['type'], array($data['id']))) {
-    foreach($entities as $entity) {
-      // Get all the providers that need updating for this entity. This should
-      // prevent multiple entries in the queue for the same entity from running.
-      foreach (share_count_entity_update_status($entity) as $provider) {
-        $uri = entity_uri($data['type'], $entity);
-        $path = drupal_get_path_alias($uri['path']);
-        share_count_entity_update_count($entity, $provider, $path);
-        share_count_entity_save_count($entity, $provider, $data['type']);
-        // Clear this specific page cache.
-        // @TODO verify that this is correct.
-        cache_clear_all($path, 'cache_path');
-        if (module_exists('entitycache')) {
-          cache_clear_all($data['id'], 'cache_entity_' . $data['type']);
-        }
+    $entity = $entities[$data['id']];
+    // Check the time status to see if updating is required.
+    if (share_count_entity_update_status($entity)) {
+      // Build the path for this entity.
+      $uri = entity_uri($data['type'], $entity);
+      $path = drupal_get_path_alias($uri['path']);
+
+      // Update all of the provider counts.
+      share_count_entity_update_counts($entity, $data['type'], $path);
+
+      // Clear this specific page cache.
+      // @TODO verify that this is correct.
+      cache_clear_all($path, 'cache_path');
+      if (module_exists('entitycache')) {
+        cache_clear_all($data['id'], 'cache_entity_' . $data['type']);
       }
+
     }
   }
 }
@@ -112,10 +118,12 @@ function share_count_provider_enabled($id) {
 /**
  * Update all enabled share counts for this entity.
  */
-function share_count_entity_update_counts($entity, $path) {
+function share_count_entity_update_counts($entity, $type, $path) {
   foreach (share_count_enabled_providers() as $provider) {
-    share_count_entity_update_count($entity, $path, $provider);
+    share_count_entity_update_count($entity, $provider, $path);
+    share_count_entity_save_count($entity, $type, $provider);
   }
+  share_count_entity_update_total_count($entity, $type);
 }
 
 /**
@@ -124,23 +132,21 @@ function share_count_entity_update_counts($entity, $path) {
  * Does not check provider enabled status.
  */
 function share_count_entity_update_count($entity, $provider, $path) {
-  $entity->share_count[$provider['id']]['count'] = $provider['callback']($path);
+  $entity->share_count_providers[$provider['id']]['count'] = $provider['callback']($path);
 }
 
 /**
  * Save a provider count for an entity.
  */
-function share_count_entity_save_count($entity, $provider, $type) {
+function share_count_entity_save_count($entity, $type, $provider) {
   list($id) = entity_extract_ids($type, $entity);
-
   $fields = array(
     'sid' => $provider['id'],
     'updated' => time(),
-    'count' => $entity->share_count[$provider['id']]['count'],
+    'count' => $entity->share_count_providers[$provider['id']]['count'],
     'entity_type' => $type,
     'entity_id' => $id,
   );
-
   // Update the database count.
   db_merge('share_count')
     ->key(array('sid' => $provider['id'], 'entity_type' => $type, 'entity_id' => $id))
@@ -148,77 +154,64 @@ function share_count_entity_save_count($entity, $provider, $type) {
     ->execute();
 }
 
+/**
+ * Updates the share_count totals on this entity.
+ * @param type $entity
+ */
+function share_count_entity_update_total_count($entity, $type) {
+  list($id) = entity_extract_ids($type, $entity);
+
+  $count = 0;
+  foreach ($entity->share_count_providers as $provider) {
+    $count += $provider['count'];
+  }
+
+  $fields = array(
+    'updated' => time(),
+    'count' => $count,
+    'entity_type' => $type,
+    'entity_id' => $id,
+  );
+  // Update the database count.
+  db_merge('share_count_total')
+    ->key(array('entity_type' => $type, 'entity_id' => $id))
+    ->fields($fields)
+    ->execute();
+}
 
 /**
- * Check to see if any provider should update the share count on this entity.
- *
- * Returns an array of providers that need to be updated.
+ * Check to see if an entity is ready for an update.
  *
  * @param object $entity
  *   Drupal object.
  *
- * @return array
- *   Array of share count proviers that need to update.
+ * @return bool
+ *   TRUE if the entity needs updating.
  */
 function share_count_entity_update_status($entity) {
-  $return = array();
-  // Get all the providers.
-  $providers = share_count_enabled_providers();
-  // If there is not share count data this entity is ready for update.
-  if (!isset($entity->share_count)) {
-    return $providers;
-  }
-  // Check the status for each provider.
-  foreach ($providers as $provider) {
-    if (share_count_entity_provider_status($entity, $provider)) {
-      $return[$provider['id']] = $provider;
-    }
-  }
-  return $return;
-}
-
-/**
- * Should this provider updated the share count for this entity.
- *
- * @param object $entity
- *   Drupal entity object.
- * @param array $provider
- *   Share count provider array.
- *
- * @return boolean
- *   TRUE if this should be updated, FALSE if update is not needed.
- */
-function share_count_entity_provider_status($entity, $provider) {
-  if (empty($entity->share_count[$provider['id']]['updated'])) {
+  // If there is no value always update.
+  if (empty($entity->share_count['updated'])) {
     return TRUE;
   }
-  $update = time() - $entity->share_count[$provider['id']]['updated'];
+  $update = time() - $entity->share_count['updated'];
   return $update > variable_get('share_count_update_time', 86400) ? TRUE : FALSE;
 }
 
 /**
- * Fetch all enabled counts for this entity.
+ * Fetch count total for this entity.
  */
 function share_count_entity_counts($entity, $type) {
-  if ($providers = share_count_enabled_providers()) {
-    list($id) = entity_extract_ids($type, $entity);
-    $entity->share_count = array();
-    $entity->share_count_total = 0;
-    $results = db_query("SELECT * FROM {share_count} WHERE entity_type = :type AND entity_id IN (:ids) AND sid IN (:sid)",
-      array(
-        ':type' => $type,
-        ':ids' => $id,
-        ':sid' => array_keys($providers)
-        ))
-      ->fetchAll();
-    foreach ($results as $result) {
-      $entity->share_count[$result->sid] = array(
-        'count' => $result->count,
-        'updated' => $result->updated,
-        'id' => $result->sid,
-      );
-      $entity->share_count_total += $result->count;
-    }
+  list($id) = entity_extract_ids($type, $entity);
+  $entity->share_count = array();
+  $results = db_query("SELECT count, updated FROM {share_count_total} WHERE entity_type = :type AND entity_id IN (:ids)",
+    array(
+      ':type' => $type,
+      ':ids' => $id,
+      ))
+    //->execute()
+    ->fetchAll();
+  if ($results) {
+    $entity->share_count = array('count' => $results[0]->count, 'updated' => $results[0]->updated);
   }
 }
 
@@ -343,7 +336,7 @@ function share_count_service_form_submit($form, &$form_state) {
 function share_count_entity_load($entities, $type) {
   // Only load enabled types.
   if (share_count_entity_type_enabled($type)) {
-    foreach($entities as $id => $entity) {
+    foreach ($entities as $id => $entity) {
       // Get the entity counts for this entity that already exist.
       share_count_entity_counts($entities[$id], $type);
     }

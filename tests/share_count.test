@@ -82,6 +82,7 @@ class ShareCount extends DrupalWebTestCase {
     $node = $this->createNode();
     // On creation the node will have no share counts.
     $this->assertTrue(empty($node->share_count), 'Initial node share count is zero.');
+
     // On creation of the node, a job will be added to the queue.
     $this->assertTrue($this->queueCount() == 1, 'Share share count is correct after adding a node.');
 
@@ -94,7 +95,7 @@ class ShareCount extends DrupalWebTestCase {
     $node = node_load($node->nid, NULL, TRUE);
 
     // After cron worker, test share count returns 5 counts.
-    $this->assertTrue($node->share_count['share_count_provider_test']['count'] == 5, 'Count for the node has been correctly updated.');
+    $this->assertTrue($node->share_count['count'] == 5, 'Count for the node has been correctly updated.');
 
     // Make sure that nothing new has been added to the queue after the node
     // load.
@@ -107,13 +108,13 @@ class ShareCount extends DrupalWebTestCase {
     // the count is still fresh.
     $this->assertTrue(!$this->queueCount(), 'Share count time stamp is still fresh; no new jobs in queue.');
 
-
     // Make the share count stale for this share.
-    db_query('UPDATE {share_count} SET updated = 0, count = 0 WHERE entity_id = :id AND sid = :sid',
-      array(':id' => $node->nid, ':sid' => 'share_count_provider_test'));
+    db_query('UPDATE {share_count_total} SET updated = 0, count = 0 WHERE entity_id = :id',
+      array(':id' => $node->nid));
     // Reload the node to check the counts.
     $node = node_load($node->nid, NULL, TRUE);
-    $this->assertTrue($node->share_count['share_count_provider_test']['updated'] === 0, 'Share count update date is now stale');
+
+    $this->assertTrue($node->share_count['updated'] == 0, 'Share count update date is now stale');
 
     // View the node.
     node_view($node, 'full');
@@ -125,7 +126,9 @@ class ShareCount extends DrupalWebTestCase {
 
     // Reload the node to check the counts.
     $node = node_load($node->nid, NULL, TRUE);
-    $this->assertTrue($node->share_count['share_count_provider_test']['count'] == 5, 'Count for the node has been correctly updated.');
+    $this->assertTrue($node->share_count['count'] == 5, 'Count for the node has been correctly updated.');
+
+    // @TODO check the provider counts in the share_count table
 
   }
 
